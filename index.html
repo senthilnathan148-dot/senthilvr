@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Senthil Nathan A — VR Portfolio</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #020408; overflow: hidden; }
+canvas#c { display: block; }
+#ui {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: rgba(5,8,16,0.9); border: 1px solid rgba(0,229,255,0.25);
+  backdrop-filter: blur(12px); padding: 10px 24px; border-radius: 40px;
+  display: flex; align-items: center; gap: 16px; z-index: 100;
+  font-family: 'Segoe UI', sans-serif; white-space: nowrap;
+}
+#ui span { color: #546E7A; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; }
+#vrbtn {
+  background: #00E5FF; color: #050810; border: none; padding: 8px 18px;
+  border-radius: 20px; font-size: 11px; letter-spacing: 2px; font-weight: 700;
+  cursor: pointer; text-transform: uppercase;
+}
+#topbar {
+  position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
+  color: rgba(0,229,255,0.6); font-family: 'Segoe UI', sans-serif;
+  font-size: 11px; letter-spacing: 4px; text-transform: uppercase; pointer-events: none;
+}
+</style>
+</head>
+<body>
+<div id="topbar">SENTHIL NATHAN A  ·  VR PORTFOLIO  ·  DRAG TO ROTATE</div>
+<div id="ui">
+  <span>🖱 Drag / Touch to rotate  ·  Scroll to zoom</span>
+  <button id="vrbtn">🥽 Enter VR</button>
+</div>
+<canvas id="c"></canvas>
+<script>
+// ================================================================
+// PURE WEBGL 3D PORTFOLIO — Zero dependencies
+// ================================================================
+const cv = document.getElementById('c');
+const gl = cv.getContext('webgl',{antialias:true}) || cv.getContext('experimental-webgl');
+let W=cv.width=window.innerWidth, H=cv.height=window.innerHeight;
+window.addEventListener('resize',()=>{ W=cv.width=window.innerWidth; H=cv.height=window.innerHeight; gl.viewport(0,0,W,H); });
+
+// ---- SHADER PROGRAMS ----
+function mkProg(vs,fs){
+  function mkS(t,s){ const sh=gl.createShader(t); gl.shaderSource(sh,s); gl.compileShader(sh); return sh; }
+  const p=gl.createProgram();
+  gl.attachShader(p,mkS(gl.VERTEX_SHADER,vs));
+  gl.attachShader(p,mkS(gl.FRAGMENT_SHADER,fs));
+  gl.linkProgram(p); return p;
+}
+
+// Colored geometry
+const pCol = mkProg(
+  `attribute vec3 p;attribute vec4 c;uniform mat4 mvp;varying vec4 vc;
+   void main(){gl_Position=mvp*vec4(p,1.);gl_PointSize=2.5;vc=c;}`,
+  `precision mediump float;varying vec4 vc;void main(){gl_FragColor=vc;}`
+);
+
+// Textured quad
+const pTex = mkProg(
+  `attribute vec3 p;attribute vec2 uv;uniform mat4 mvp;varying vec2 vuv;
+   void main(){gl_Position=mvp*vec4(p,1.);vuv=uv;}`,
+  `precision mediump float;uniform sampler2D tex;varying vec2 vuv;
+   void main(){gl_FragColor=texture2D(tex,vuv);}`
+);
+
+gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+gl.enable(gl.DEPTH_TEST);
+
+// ---- MATH ----
+const m4=()=>new Float32Array(16);
+function ident(m){m[0]=m[5]=m[10]=m[15]=1;m[1]=m[2]=m[3]=m[4]=m[6]=m[7]=m[8]=m[9]=m[11]=m[12]=m[13]=m[14]=0;return m;}
+function mul(o,a,b){for(let i=0;i<4;i++)for(let j=0;j<4;j++){o[j*4+i]=0;for(let k=0;k<4;k++)o[j*4+i]+=a[k*4+i]*b[j*4+k];}return o;}
+function persp(m,fov,asp,n,f){const t=1/Math.tan(fov/2);ident(m);m[0]=t/asp;m[5]=t;m[10]=(f+n)/(n-f);m[11]=-1;m[14]=(2*f*n)/(n-f);m[15]=0;return m;}
+function tran(m,x,y,z){const t=m4();ident(t);t[12]=x;t[13]=y;t[14]=z;return mul(m4(),m,t);}
+function ryaw(m,a){const t=m4();ident(t);const c=Math.cos(a),s=Math.sin(a);t[0]=c;t[2]=s;t[8]=-s;t[10]=c;return mul(m4(),m,t);}
+function rpitch(m,a){const t=m4();ident(t);const c=Math.cos(a),s=Math.sin(a);t[5]=c;t[6]=-s;t[9]=s;t[10]=c;return mul(m4(),m,t);}
+
+// ---- DRAW HELPERS ----
+function drawGeo(mvp, verts, mode){
+  gl.useProgram(pCol);
+  const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf); gl.bufferData(gl.ARRAY_BUFFER,verts,gl.STATIC_DRAW);
+  const ap=gl.getAttribLocation(pCol,'p'); const ac=gl.getAttribLocation(pCol,'c');
+  gl.enableVertexAttribArray(ap); gl.vertexAttribPointer(ap,3,gl.FLOAT,false,28,0);
+  gl.enableVertexAttribArray(ac); gl.vertexAttribPointer(ac,4,gl.FLOAT,false,28,12);
+  gl.uniformMatrix4fv(gl.getUniformLocation(pCol,'mvp'),false,mvp);
+  gl.drawArrays(mode,0,verts.length/7); gl.deleteBuffer(buf);
+}
+
+function drawTex(mvp, tex, x,y,z,w,h){
+  gl.useProgram(pTex);
+  const verts=new Float32Array([
+    x-w/2,y-h/2,z, 0,1,  x+w/2,y-h/2,z, 1,1,  x+w/2,y+h/2,z, 1,0,
+    x-w/2,y-h/2,z, 0,1,  x+w/2,y+h/2,z, 1,0,  x-w/2,y+h/2,z, 0,0,
+  ]);
+  const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf); gl.bufferData(gl.ARRAY_BUFFER,verts,gl.STATIC_DRAW);
+  const ap=gl.getAttribLocation(pTex,'p'); const au=gl.getAttribLocation(pTex,'uv');
+  gl.enableVertexAttribArray(ap); gl.vertexAttribPointer(ap,3,gl.FLOAT,false,20,0);
+  gl.enableVertexAttribArray(au); gl.vertexAttribPointer(au,2,gl.FLOAT,false,20,12);
+  gl.uniformMatrix4fv(gl.getUniformLocation(pTex,'mvp'),false,mvp);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.uniform1i(gl.getUniformLocation(pTex,'tex'),0);
+  gl.drawArrays(gl.TRIANGLES,0,6); gl.deleteBuffer(buf);
+}
+
+// ---- GEOMETRY BUILDERS ----
+function rect(x,y,z,w,h,r,g,b,a){
+  return new Float32Array([
+    x-w/2,y-h/2,z,r,g,b,a, x+w/2,y-h/2,z,r,g,b,a, x+w/2,y+h/2,z,r,g,b,a,
+    x-w/2,y-h/2,z,r,g,b,a, x+w/2,y+h/2,z,r,g,b,a, x-w/2,y+h/2,z,r,g,b,a,
+  ]);
+}
+function border(x,y,z,w,h,r,g,b,a,lw=0.022){
+  const t=[]; const add=(ax,ay,aw,ah)=>{const f=new Float32Array([ax-aw/2,ay-ah/2,z,r,g,b,a,ax+aw/2,ay-ah/2,z,r,g,b,a,ax+aw/2,ay+ah/2,z,r,g,b,a,ax-aw/2,ay-ah/2,z,r,g,b,a,ax+aw/2,ay+ah/2,z,r,g,b,a,ax-aw/2,ay+ah/2,z,r,g,b,a]);t.push(...f);};
+  add(x,y+h/2-lw/2,w,lw); add(x,y-h/2+lw/2,w,lw); add(x-w/2+lw/2,y,lw,h); add(x+w/2-lw/2,y,lw,h);
+  return new Float32Array(t);
+}
+function bar(x,y,z,fw,pct,r,g,b){
+  const fw2=fw*pct;
+  return new Float32Array([
+    x-fw/2,y-.022,z,.04,.09,.14,.9, x+fw/2,y-.022,z,.04,.09,.14,.9, x+fw/2,y+.022,z,.04,.09,.14,.9,
+    x-fw/2,y-.022,z,.04,.09,.14,.9, x+fw/2,y+.022,z,.04,.09,.14,.9, x-fw/2,y+.022,z,.04,.09,.14,.9,
+    x-fw/2,y-.022,z+.001,r,g,b,.9, x-fw/2+fw2,y-.022,z+.001,r,g,b,.9, x-fw/2+fw2,y+.022,z+.001,r,g,b,.9,
+    x-fw/2,y-.022,z+.001,r,g,b,.9, x-fw/2+fw2,y+.022,z+.001,r,g,b,.9, x-fw/2,y+.022,z+.001,r,g,b,.9,
+  ]);
+}
+function stars(n=400){
+  const v=[];
+  for(let i=0;i<n;i++){
+    const th=Math.random()*Math.PI*2, ph=Math.acos(2*Math.random()-1), r=28+Math.random()*18;
+    v.push(r*Math.sin(ph)*Math.cos(th),r*Math.sin(ph)*Math.sin(th),r*Math.cos(ph),
+      .5+Math.random()*.5,.7+Math.random()*.3,1,.2+Math.random()*.8);
+  }
+  return new Float32Array(v);
+}
+function grid(sz=22,st=2.5){
+  const v=[];
+  for(let i=-sz;i<=sz;i+=st){
+    v.push(i,-1.8,-sz,0,.55,1,.07,i,-1.8,sz,0,.55,1,.07);
+    v.push(-sz,-1.8,i,0,.55,1,.07,sz,-1.8,i,0,.55,1,.07);
+  }
+  return new Float32Array(v);
+}
+function ring(rad,seg,y,col,a){
+  const v=[];
+  for(let i=0;i<=seg;i++){const t=i/seg*Math.PI*2;v.push(rad*Math.cos(t),y,rad*Math.sin(t),...col,a);}
+  return new Float32Array(v);
+}
+function octa(s,col,a){
+  const pts=[[0,s,0],[s,0,0],[0,0,s],[-s,0,0],[0,0,-s],[0,-s,0]];
+  const edges=[[0,1],[0,2],[0,3],[0,4],[1,2],[2,3],[3,4],[4,1],[5,1],[5,2],[5,3],[5,4]];
+  const v=[];
+  edges.forEach(([a2,b])=>{v.push(...pts[a2],...col,a,...pts[b],...col,a);});
+  return new Float32Array(v);
+}
+
+// ---- TEXTURE FACTORY ----
+function mkTex(lines, fs=22, fc='#fff', fw=512, fh=200, align='center'){
+  const c=document.createElement('canvas'); c.width=fw; c.height=fh;
+  const x=c.getContext('2d');
+  x.clearRect(0,0,fw,fh);
+  x.font=`${fs}px 'Segoe UI',Arial,sans-serif`;
+  x.fillStyle=fc; x.textAlign=align; x.textBaseline='middle';
+  const lh=fs*1.45, tot=lines.length*lh, sy=(fh-tot)/2+lh/2;
+  lines.forEach((l,i)=>x.fillText(l, align==='center'?fw/2:align==='left'?18:fw-18, sy+i*lh));
+  const t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,c);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  return t;
+}
+function mkTexB(lines,fs,fc,fw,fh,align){const t=mkTex(lines,fs,fc,fw,fh,align);return t;}
+
+// ---- PRE-BAKE TEXTURES ----
+const T={};
+// HERO
+T.hn=mkTex(['SENTHIL NATHAN A'],58,'#fff',900,110);
+T.ht=mkTex(['CORPORATE TRAINER  ·  MECHANICAL ENGINEER'],22,'#00E5FF',900,60);
+T.hs=mkTex(['CAD/CAM  ·  Automotive Design  ·  Cloud Tech  ·  Pondicherry, Tamil Nadu'],18,'#546E7A',900,52);
+T.hst=mkTex(['7+ Years     15+ Tools Taught     5 Certifications     2 Job Roles'],20,'#00E5FF',900,52);
+// SKILLS
+T.stit=mkTex(['POWER SKILLS'],34,'#00E5FF',512,72);
+const SKS=[['SolidWorks',0.92],['AutoCAD',0.90],['CATIA V5',0.88],['Fusion 360',0.78],['Creo',0.75],['Inventor',0.72],['Photoshop',0.70],['AWS Cloud',0.68],['Excel',0.82]];
+T.skl=SKS.map(([n])=>mkTex([n],20,'#E0F7FA',300,44,'left'));
+T.skp=SKS.map(([,p])=>mkTex([Math.round(p*100)+'%'],20,'#00E5FF',80,44));
+// EXP
+T.etit=mkTex(['WORK EXPERIENCE'],34,'#00E5FF',512,72);
+T.er1=mkTex(['Corporate Trainer — CAD/CAM & Design Software'],24,'#fff',700,58);
+T.ec1=mkTex(['Institute of Industrial Design & Corporate Training, Pondicherry  ·  7 Years'],18,'#00E5FF',700,48);
+T.ed1=mkTex(['SolidWorks · CATIA V5 · AutoCAD · Creo · Fusion 360 · Inventor','AWS Cloud · IoT · Android Studio · Photoshop · Excel · BIW Design'],18,'#78909C',700,80,'left');
+T.er2=mkTex(['Junior Engineer — AutoCAD Structural Drafting'],24,'#fff',700,58);
+T.ec2=mkTex(['ASE Structure Design Pvt. Ltd., Chennai  ·  Feb 2021 – Jul 2022'],18,'#00E5FF',700,48);
+T.ed2=mkTex(['Telecom tower site drawings · Structural modifications','Radiation zone analysis for telecom sites'],18,'#78909C',700,80,'left');
+// CERTS
+T.ctit=mkTex(['CERTIFICATIONS'],34,'#00E5FF',512,72);
+const CERTS=[['Proficient in SolidWorks','Dassault Systemes · 2022'],['Proficient in Revit BIM','Autodesk · 2026'],['Proficient in Revit MEP','Autodesk · 2022'],['Master in Auto Body Design','Dassault / Autodesk · 2022'],['AWS Academy Cloud Foundations','Amazon Web Services · 2025'],['AutoCAD Certified Professional','Autodesk · Global']];
+T.cn=CERTS.map(([n])=>mkTex([n],20,'#E0F7FA',600,44,'left'));
+T.ci=CERTS.map(([,i])=>mkTex([i],17,'#00B8D4',600,38,'left'));
+// EDUCATION
+T.edtit=mkTex(['EDUCATION & CONTACT'],34,'#00E5FF',600,72);
+T.edu=[
+  mkTex(['B.E. Mechanical Engineering'],22,'#fff',640,50),
+  mkTex(['Kings College of Engineering, Thanjavur  ·  Anna University  ·  CGPA 6.40  ·  2017'],17,'#78909C',700,44),
+  mkTex(['Higher Secondary (XII)'],22,'#fff',640,50),
+  mkTex(['Sowdambikaa Mat. Hr. Sec. School, Thuraiyur  ·  State Board  ·  68%  ·  2013'],17,'#78909C',700,44),
+  mkTex(['Secondary (X)'],22,'#fff',640,50),
+  mkTex(['Govt. Boys Hr. Sec. School, Aranthangi  ·  State Board  ·  66%  ·  2010'],17,'#78909C',700,44),
+];
+T.cont=mkTex(['✉  senthilnathan148@gmail.com   ·   📞  +91 8220455877','🔗  linkedin.com/in/Senthil-nathan   ·   📍  Pondicherry, Tamil Nadu'],18,'#00E5FF',700,72);
+// TRAINING
+T.trtit=mkTex(['TRAINING FOCUS'],34,'#00E5FF',600,72);
+T.tr=[
+  mkTex(['CAD/CAM:  SolidWorks  ·  CATIA V5  ·  AutoCAD  ·  Creo  ·  Fusion 360  ·  Inventor'],20,'#E0F7FA',1000,52),
+  mkTex(['Design:  Body In White  ·  Reverse Engineering  ·  Clay Modelling  ·  Alias Surface  ·  Digital Sketching'],20,'#80CBC4',1000,52),
+  mkTex(['Cloud & Tech:  AWS Cloud  ·  IoT  ·  Android Studio   |   Productivity:  Adobe Photoshop  ·  Excel Expert'],20,'#CE93D8',1000,52),
+];
+
+// ---- STATIC GEOMETRY ----
+const ST = stars(500);
+const GR = grid();
+const R1 = ring(11,90,-1.5,[0,.7,1],.12);
+const R2 = ring(8,90,-1.5,[0,.55,.83],.10);
+const R3 = ring(16,90,-1.5,[0,.5,.7],.08);
+const OC = octa(1.4,[0,.9,1],.3);
+const OC2= octa(1.0,[0,.7,.9],.22);
+
+// ---- CAMERA ----
+let yaw=0.3, pitch=0.1, dist=8, drag=false, lx=0,ly=0, lastAct=Date.now();
+cv.addEventListener('mousedown',e=>{drag=true;lx=e.clientX;ly=e.clientY;lastAct=Date.now();});
+cv.addEventListener('mouseup',()=>drag=false);
+cv.addEventListener('mousemove',e=>{
+  if(!drag)return; yaw-=(e.clientX-lx)*.005; pitch-=(e.clientY-ly)*.004;
+  pitch=Math.max(-.7,Math.min(.6,pitch)); lx=e.clientX;ly=e.clientY; lastAct=Date.now();
+});
+cv.addEventListener('wheel',e=>{dist=Math.max(3,Math.min(20,dist+e.deltaY*.012)); lastAct=Date.now();});
+cv.addEventListener('touchstart',e=>{drag=true;lx=e.touches[0].clientX;ly=e.touches[0].clientY;lastAct=Date.now();},{passive:true});
+cv.addEventListener('touchend',()=>drag=false);
+cv.addEventListener('touchmove',e=>{
+  if(!drag)return; yaw-=(e.touches[0].clientX-lx)*.005; pitch-=(e.touches[0].clientY-ly)*.004;
+  pitch=Math.max(-.7,Math.min(.6,pitch)); lx=e.touches[0].clientX;ly=e.touches[0].clientY; lastAct=Date.now();
+},{passive:true});
+
+// ---- RENDER LOOP ----
+let t=0;
+function frame(){
+  t+=.006;
+  gl.clearColor(.008,.016,.031,1);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.viewport(0,0,W,H);
+
+  if(Date.now()-lastAct>2500) yaw+=.003;
+
+  const proj=persp(m4(),Math.PI/3,W/H,.1,200);
+  let V=ident(m4()); V=tran(V,0,0,-dist); V=rpitch(V,pitch); V=ryaw(V,yaw);
+  const VP=mul(m4(),proj,V);
+
+  // stars + env
+  drawGeo(VP,ST,gl.POINTS);
+  drawGeo(VP,GR,gl.LINES);
+  drawGeo(VP,R1,gl.LINE_STRIP);
+  drawGeo(VP,R2,gl.LINE_STRIP);
+  drawGeo(VP,R3,gl.LINE_STRIP);
+
+  // floating octahedrons
+  const m1=mul(m4(),tran(m4(),-13,5,-10),mul(m4(),mul(m4(),ident(m4()),rpitch(m4(),t*.7)),ryaw(m4(),t)));
+  drawGeo(mul(m4(),VP,m1),OC,gl.LINES);
+  const m2=mul(m4(),tran(m4(),13,-2,-8),mul(m4(),rpitch(m4(),t),ryaw(m4(),t*.6)));
+  drawGeo(mul(m4(),VP,m2),OC2,gl.LINES);
+
+  // -------- PANELS --------
+  function panel(px,py,pz,ry, pw,ph, floatAmp, floatSpd, drawFn){
+    const fy = py+Math.sin(t*floatSpd)*floatAmp;
+    let M=ident(m4()); M=tran(M,px,fy,pz); M=ryaw(M,ry);
+    const MVP=mul(m4(),VP,M);
+    // bg
+    drawGeo(MVP,new Float32Array([...rect(0,0,-.005,pw+.06,ph+.06,.05,.08,.13,.95),...rect(0,0,0,pw,ph,.02,.03,.06,.96)]),gl.TRIANGLES);
+    // border
+    drawGeo(MVP,border(0,0,.005,pw,ph,0,.9,1,.45),gl.TRIANGLES);
+    drawFn(MVP);
+  }
+
+  // ── HERO ────────────────────────────────────────────────
+  panel(0,.6,-6,0, 5.8,3.0, .15,.7, mvp=>{
+    drawTex(mvp,T.hn, 0,.95,.01, 5.5,.7);
+    drawTex(mvp,T.ht, 0,.38,.01, 5.2,.38);
+    drawTex(mvp,T.hs, 0,-.06,.01, 5.0,.33);
+    drawGeo(mvp,rect(0,-.35,.01,3.6,.007,0,.9,1,.55),gl.TRIANGLES);
+    drawTex(mvp,T.hst,0,-.72,.01, 5.0,.34);
+  });
+
+  // ── SKILLS ──────────────────────────────────────────────
+  panel(-5.8,.5,-1.5, Math.PI*.33, 3.6,5.4, .18,.65, mvp=>{
+    drawTex(mvp,T.stit,0,2.3,.01,3.3,.5);
+    drawGeo(mvp,rect(0,1.98,.01,2.6,.006,0,.9,1,.5),gl.TRIANGLES);
+    SKS.forEach(([,pct],i)=>{
+      const iy=1.63-i*.52;
+      drawTex(mvp,T.skl[i],-0.6,iy,.01,1.5,.33);
+      drawGeo(mvp,bar(.5,iy,.01,1.6,pct,0,.9,1),gl.TRIANGLES);
+      drawTex(mvp,T.skp[i],1.52,iy,.01,.38,.33);
+    });
+  });
+
+  // ── EXPERIENCE ──────────────────────────────────────────
+  panel(5.8,.5,-1.5, -Math.PI*.33, 4.2,5.4, .14,.75, mvp=>{
+    drawTex(mvp,T.etit,0,2.3,.01,3.8,.5);
+    drawGeo(mvp,rect(0,1.98,.01,3.2,.006,0,.9,1,.5),gl.TRIANGLES);
+    drawTex(mvp,T.er1,0,1.58,.01,4.0,.42);
+    drawTex(mvp,T.ec1,0,1.15,.01,4.0,.36);
+    drawTex(mvp,T.ed1,0,.65,.01,3.9,.55);
+    drawGeo(mvp,rect(0,.26,.01,3.6,.005,0,.9,1,.3),gl.TRIANGLES);
+    drawTex(mvp,T.er2,0,-.22,.01,4.0,.42);
+    drawTex(mvp,T.ec2,0,-.65,.01,4.0,.36);
+    drawTex(mvp,T.ed2,0,-1.15,.01,3.9,.55);
+  });
+
+  // ── CERTIFICATIONS ──────────────────────────────────────
+  panel(-4.2,.5,3.5, Math.PI*.68, 3.6,4.8, .2,.6, mvp=>{
+    drawTex(mvp,T.ctit,0,2.0,.01,3.3,.5);
+    drawGeo(mvp,rect(0,1.69,.01,2.6,.006,0,.9,1,.5),gl.TRIANGLES);
+    CERTS.forEach((_,i)=>{
+      const cy=1.35-i*.52;
+      drawTex(mvp,T.cn[i],0,cy+.08,.01,3.4,.35);
+      drawTex(mvp,T.ci[i],0,cy-.14,.01,3.4,.30);
+      if(i<5) drawGeo(mvp,rect(0,cy-.3,.01,3.0,.004,.1,.3,.4,.3),gl.TRIANGLES);
+    });
+  });
+
+  // ── EDUCATION + CONTACT ─────────────────────────────────
+  panel(4.2,.5,3.5, -Math.PI*.68, 3.8,4.8, .16,.8, mvp=>{
+    drawTex(mvp,T.edtit,0,2.0,.01,3.5,.5);
+    drawGeo(mvp,rect(0,1.69,.01,2.8,.006,0,.9,1,.5),gl.TRIANGLES);
+    const ys=[1.32,.92,.52,.12,-.28,-.68];
+    T.edu.forEach((tex,i)=>{ drawTex(mvp,tex,0,ys[i],.01,3.6,i%2===0?.38:.33); });
+    drawGeo(mvp,rect(0,-1.05,.01,3.2,.005,0,.9,1,.3),gl.TRIANGLES);
+    drawTex(mvp,T.cont,0,-1.5,.01,3.6,.52);
+  });
+
+  // ── TRAINING — overhead ──────────────────────────────────
+  panel(0,4.5,-2.5, 0, 7.0,2.1, .12,.55, mvp=>{
+    drawTex(mvp,T.trtit,0,.72,.01,4.5,.5);
+    drawGeo(mvp,rect(0,.38,.01,5,.006,0,.9,1,.5),gl.TRIANGLES);
+    T.tr.forEach((tex,i)=>drawTex(mvp,tex,0,.02-i*.48,.01,6.8,.38));
+  });
+
+  requestAnimationFrame(frame);
+}
+frame();
+
+// VR button
+document.getElementById('vrbtn').onclick=()=>{
+  if(navigator.xr){
+    navigator.xr.isSessionSupported('immersive-vr').then(ok=>{
+      if(ok) navigator.xr.requestSession('immersive-vr').catch(e=>alert('VR error: '+e));
+      else alert('Open this page in Meta Quest 3S browser for full VR!');
+    });
+  } else alert('Open this page in Meta Quest 3S browser for full VR!');
+};
+</script>
+</body>
+</html>
